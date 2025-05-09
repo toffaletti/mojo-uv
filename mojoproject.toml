@@ -1,0 +1,12 @@
+[project]
+authors = ["Jason Toffaletti <toffaletti@gmail.com>"]
+channels = ["https://conda.modular.com/max-nightly", "https://conda.modular.com/max", "https://repo.prefix.dev/modular-community", "conda-forge"]
+name = "mojo-uv"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+max = "*"
+libuv = ">=1.50.0,<2"
