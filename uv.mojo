@@ -341,6 +341,8 @@ fn uv_handle_get_loop(handle: uv_handle_ptr) -> uv_loop_ptr:
 struct Handle[type: uv_handle_type](
     Copyable, Movable, EqualityComparable, Stringable
 ):
+    # TODO: handle should probably just be UnsafePointer
+    # and perhaps call free in close_cb?
     var _ptr: ArcPointer[Ref[uv_handle_t]]
 
     @staticmethod
