@@ -737,3 +737,113 @@ struct Req[type: uv_req_type](
 
     fn set_data[T: AnyType](self, data: UnsafePointer[T]):
         return uv_req_set_data(self.unsafe_ptr(), data)
+
+    fn free(owned self):
+        # only safe to call from callback
+        self.ptr.free()
+
+
+alias uv_write_cb = fn (uv_req_ptr, c_int) -> None
+alias uv_connect_cb = fn (uv_req_ptr, c_int) -> None
+alias uv_shutdown_cb = fn (uv_req_ptr, c_int) -> None
+alias uv_connection_cb = fn (uv_handle_ptr, c_int) -> None
+
+
+# TODO: this might not work
+# https://docs.libuv.org/en/v1.x/misc.html#c.uv_buf_init
+@value
+struct uv_buf_t:
+    base: UnsafePointer[c_char]
+    len: c_size_t
+
+    fn free(owned self):
+        self.base.free()
+
+
+alias uv_buf_ptr = UnsafePointer[uv_buf_t]
+alias uv_alloc_cb = fn (uv_handle_ptr, c_size_t, uv_buf_ptr) -> None
+
+
+fn _alloc_cb(
+    handle: uv_handle_ptr, suggested_size: c_size_t, out buf: uv_buf_ptr
+):
+    buf[].base = UnsafePointer[c_char].alloc(suggested_size)
+    buf[].len = suggested_size
+
+
+fn uv_shutdown(
+    req: uv_req_ptr, handle: uv_handle_ptr, cb: uv_shutdown_cb
+) -> c_int:
+    return _get_dylib_function[
+        "uv_shutdown",
+        fn (uv_req_ptr, uv_handle_ptr, uv_shutdown_cb) -> c_int,
+    ]()(req, handle, cb)
+
+
+fn uv_listen(
+    stream: uv_handle_ptr, backlog: c_int, cb: uv_connection_cb
+) -> c_int:
+    return _get_dylib_function[
+        "uv_listen",
+        fn (uv_handle_ptr, c_int, uv_connection_cb) -> c_int,
+    ]()(stream, backlog, cb)
+
+
+fn uv_accept(server: uv_handle_ptr, client: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_accept",
+        fn (uv_handle_ptr, uv_handle_ptr) -> c_int,
+    ]()(server, client)
+
+
+fn uv_read_start(
+    stream: uv_handle_ptr, alloc_cb: uv_alloc_cb, read_cb: uv_read_cb
+) -> c_int:
+    return _get_dylib_function[
+        "uv_read_start",
+        fn (uv_handle_ptr, uv_alloc_cb, uv_read_cb) -> c_int,
+    ]()(stream, alloc_cb, read_cb)
+
+
+fn uv_read_stop(stream: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_read_stop",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(stream)
+
+
+# fn uv_write(req: uv_req_ptr, stream: uv_handle_ptr, bufs: , nbufs: c_uint, cb: uv_write_cb) -> c_int:
+#     return _get_dylib_function[
+#         "uv_write",
+#         fn (uv_req_ptr, uv_handle_ptr, ?, c_uint, uv_write_cb) -> c_int,
+#     ]()(req, stream, bufs, nbufs, cb)
+
+
+fn uv_tcp_init(loop: uv_loop_ptr, handle: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_tcp_init",
+        fn (uv_loop_ptr, uv_handle_ptr) -> c_int,
+    ]()(loop, handle)
+
+
+fn uv_tcp_init_ex(
+    loop: uv_loop_ptr, handle: uv_handle_ptr, flags: c_uint
+) -> c_int:
+    return _get_dylib_function[
+        "uv_tcp_init_ex",
+        fn (uv_loop_ptr, uv_handle_ptr, c_uint) -> c_int,
+    ]()(loop, handle, flags)
+
+
+struct TCP:
+    var h: Handle[UV_TCP]
+
+    fn __init__(out self, loop: Loop, flags: c_uint):
+        self.h = Handle[UV_TIMER].new()
+        # always succeeds
+        _ = uv_tcp_init(loop.unsafe_ptr(), self.h.unsafe_ptr())
+        _ = uv_tcp_init_ex(loop.unsafe_ptr(), self.h.unsafe_ptr())
+
+    # TODO: how to represent sockaddr?
+    # probably need some C code
+    # fn bind():
