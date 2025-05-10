@@ -650,3 +650,90 @@ struct PrepareHandle:
         r = uv_prepare_stop(self.h.ptr)
         if r != 0:
             raise_uverr["stop failed"](r)
+
+
+struct uv_req_t:
+    pass
+
+
+alias uv_req_ptr = UnsafePointer[uv_req_t]
+alias uv_req_type = c_int
+
+
+fn uv_req_size(type: uv_req_type) -> c_size_t:
+    return _get_dylib_function[
+        "uv_req_size",
+        fn (uv_req_type) -> c_size_t,
+    ]()(type)
+
+
+fn uv_req_get_type(req: uv_req_ptr) -> uv_req_type:
+    return _get_dylib_function[
+        "uv_req_get_type",
+        fn (uv_req_ptr) -> uv_req_type,
+    ]()(req)
+
+
+fn uv_req_get_data[T: AnyType](ptr: uv_req_ptr) -> UnsafePointer[T]:
+    return _get_dylib_function[
+        "uv_req_get_data",
+        fn (uv_req_ptr) -> UnsafePointer[T],
+    ]()(ptr)
+
+
+fn uv_req_set_data[T: AnyType](ptr: uv_req_ptr, data: UnsafePointer[T]):
+    return _get_dylib_function[
+        "uv_req_set_data",
+        fn (uv_req_ptr, UnsafePointer[T]),
+    ]()(ptr, data)
+
+
+fn uv_req_type_name(req: uv_req_type) -> UnsafePointer[c_char]:
+    return _get_dylib_function[
+        "uv_req_type_name",
+        fn (c_int) -> UnsafePointer[c_char],
+    ]()(err)
+
+
+fn uv_cancel(req: uv_req_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_ancel",
+        fn (uv_req_ptr) -> c_int,
+    ]()(req)
+
+
+@register_passable
+struct Req[type: uv_req_type](
+    Copyable, Movable, EqualityComparable, Stringable
+):
+    var _ptr: UnsafePointer[uv_req_t]
+
+    @staticmethod
+    fn new() -> Req[type]:
+        var size = uv_req_size(type)
+        var buf = UnsafePointer[c_char].alloc(size)
+        return req[type](buf.bitcast[uv_req_t]())
+
+    fn __init__(out self, ptr: uv_req_ptr):
+        self._ptr = ptr
+
+    fn __copyinit__(out self, existing: Self):
+        self._ptr = existing._ptr
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self.unsafe_ptr() == other.unsafe_ptr()
+
+    fn __ne__(self, other: Self) -> Bool:
+        return self.unsafe_ptr() != other.unsafe_ptr()
+
+    fn __str__(self) -> String:
+        return "req[" + String(self.unsafe_ptr()) + "]"
+
+    fn unsafe_ptr(self) -> uv_req_ptr:
+        return self.ptr
+
+    fn get_data[T: AnyType](self) -> UnsafePointer[T]:
+        return uv_req_get_data[T](self.unsafe_ptr())
+
+    fn set_data[T: AnyType](self, data: UnsafePointer[T]):
+        return uv_req_set_data(self.unsafe_ptr(), data)
