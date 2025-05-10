@@ -13,8 +13,8 @@ def main():
 
     @parameter
     fn timer():
-        print("yay")
         counter += 1
+        print("timer counter:", counter)
 
     # print("uv_loop_size:", uv.uv_loop_size())
     with uv.Loop.default() as loop,
