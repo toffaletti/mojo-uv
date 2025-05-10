@@ -1,12 +1,7 @@
-from memory import UnsafePointer, stack_allocation
+from memory import UnsafePointer, stack_allocation, OwnedPointer
 from pathlib import Path
 from utils import Variant
-from sys.ffi import (
-    c_char,
-    c_int,
-    c_uint,
-    c_size_t,
-)
+from sys.ffi import c_char, c_int, c_uint, c_size_t, c_long_long
 from sys.ffi import _get_dylib_function as _ffi_get_dylib_function
 from sys.ffi import _Global, _OwnedDLHandle, _find_dylib
 
@@ -35,45 +30,58 @@ alias UV_RUN_ONCE = uv_run_mode(1)
 alias UV_RUN_NOWAIT = uv_run_mode(2)
 
 
-struct Loop[is_owned: Bool = False]:
+struct Loop(Copyable, Movable, EqualityComparable, Stringable):
     var _loop: uv_loop_ptr
+    var _is_owned: Bool
 
     @staticmethod
-    fn default() -> Loop[False]:
-        return Loop[False](uv_default_loop())
+    fn default() -> Loop:
+        return Loop(uv_default_loop(), is_owned=False)
 
     @staticmethod
-    fn new() raises -> Loop[True]:
+    fn new() raises -> Loop:
         var size = uv_loop_size()
         var buf = UnsafePointer[c_char].alloc(size)
-        loop = Loop[True](buf.bitcast[uv_loop_t]())
+        loop = Loop(buf.bitcast[uv_loop_t](), is_owned=True)
         r = uv_loop_init(loop._loop)
         if r != 0:
             raise_uverr["init failed"](r)
         return loop^
 
-    fn __init__(out self, loop: uv_loop_ptr):
+    fn __init__(out self, loop: uv_loop_ptr, is_owned: Bool):
         self._loop = loop
+        self._is_owned = is_owned
 
     fn __copyinit__(out self, existing: Self):
         self._loop = existing._loop
+        self._is_owned = False
 
     fn __moveinit__(out self, owned existing: Self):
         self._loop = existing._loop
+        self._is_owned = existing._is_owned
+
+    fn __eq__(self, other: Self) -> Bool:
+        return self._loop == other._loop
+
+    fn __ne__(self, other: Self) -> Bool:
+        return self._loop != other._loop
+
+    fn __str__(self) -> String:
+        return "loop[" + String(self._loop) + "]"
 
     fn __del__(owned self):
-        if is_owned:
+        if self._is_owned:
             self._loop.free()
 
     fn __enter__(self) -> Self:
         return self
 
     fn __exit__(self) raises:
-        print("exiting")
+        # allow close callbacks to run
+        _ = self.run(uv.UV_RUN_ONCE)
         self.close()
 
     fn close(self) raises:
-        print("closing:", self._loop)
         r = uv_loop_close(self._loop)
         if r != 0:
             raise_uverr["close failed"](r)
@@ -236,64 +244,136 @@ fn uv_handle_get_type(handle: uv_handle_ptr) -> uv_handle_type:
     ]()(handle)
 
 
+fn uv_handle_get_data[T: AnyType](ptr: uv_handle_ptr) -> UnsafePointer[T]:
+    return _get_dylib_function[
+        "uv_handle_get_data",
+        fn (uv_handle_ptr) -> UnsafePointer[T],
+    ]()(ptr)
+
+
+fn uv_handle_set_data[T: AnyType](ptr: uv_handle_ptr, data: UnsafePointer[T]):
+    return _get_dylib_function[
+        "uv_handle_set_data",
+        fn (uv_handle_ptr, UnsafePointer[T]),
+    ]()(ptr, data)
+
+
 alias uv_close_cb = fn (uv_handle_ptr) -> None
 
 
-fn uv_handle_close(handle: uv_handle_ptr, cb: uv_close_cb) -> None:
+fn uv_close(handle: uv_handle_ptr, cb: uv_close_cb) -> None:
     return _get_dylib_function[
-        "uv_handle_get_type",
+        "uv_close",
         fn (uv_handle_ptr, uv_close_cb) -> None,
     ]()(handle, cb)
 
 
-struct Handle[type: uv_handle_type]:
+fn uv_ref(handle: uv_handle_ptr) -> None:
+    return _get_dylib_function[
+        "uv_ref",
+        fn (uv_handle_ptr) -> None,
+    ]()(handle)
+
+
+fn uv_unref(handle: uv_handle_ptr) -> None:
+    return _get_dylib_function[
+        "uv_unref",
+        fn (uv_handle_ptr) -> None,
+    ]()(handle)
+
+
+fn uv_has_ref(handle: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_has_ref",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(handle)
+
+
+fn uv_is_active(handle: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_is_active",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(handle)
+
+
+fn uv_is_closing(handle: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_is_closing",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(handle)
+
+
+# TODO: this will only work on unix not windows
+fn uv_fileno(handle: uv_handle_ptr, mut fd: UnsafePointer[c_int]) -> c_int:
+    return _get_dylib_function[
+        "uv_fileno",
+        fn (uv_handle_ptr, UnsafePointer[c_int]) -> c_int,
+    ]()(handle, fd)
+
+
+fn uv_handle_get_loop(handle: uv_handle_ptr) -> uv_loop_ptr:
+    return _get_dylib_function[
+        "uv_handle_get_loop",
+        fn (uv_handle_ptr) -> uv_loop_ptr,
+    ]()(handle)
+
+
+struct Handle[type: uv_handle_type](Stringable, Copyable):
     var ptr: uv_handle_ptr
+    var is_owned: Bool
 
     @staticmethod
     fn new() -> Handle[type]:
         var size = uv_handle_size(type)
         var buf = UnsafePointer[c_char].alloc(size)
-        return Handle[type](buf.bitcast[uv_handle_t]())
+        return Handle[type](buf.bitcast[uv_handle_t](), is_owned=True)
 
-    fn __init__(out self, ptr: uv_handle_ptr):
+    fn __init__(out self, ptr: uv_handle_ptr, is_owned: Bool):
         self.ptr = ptr
+        self.is_owned = is_owned
 
     fn __del__(owned self):
-        print("freeing:", self.ptr)
-        self.ptr.free()
+        if self.is_owned and not self.is_active():
+            self.ptr.free()
+
+    fn __str__(self) -> String:
+        return String(self.ptr)
+
+    fn __copyinit__(out self, existing: Self):
+        self.ptr = existing.ptr
+        self.is_owned = False
 
     fn close(self):
         @always_inline
         fn close_cb(handle: uv_handle_ptr):
-            print("closed:", handle)
             pass
 
-        print("closing:", self.ptr)
-        uv_handle_close(self.ptr, close_cb)
+        uv_close(self.ptr, close_cb)
 
+    fn has_ref(self) -> Bool:
+        return Bool(uv_has_ref(self.ptr))
 
-struct IdleHandle:
-    var h: Handle[UV_IDLE]
+    fn `ref`(self):
+        uv_ref(self.ptr)
 
-    fn __init__(out self, loop: Loop) raises:
-        self.h = Handle[UV_IDLE].new()
-        r = uv_idle_init(loop._loop, self.h.ptr)
-        if r != 0:
-            raise_uverr["init failed"](r)
+    fn unref(self):
+        uv_unref(self.ptr)
 
-    fn start[func: fn () -> Bool](self):
-        @always_inline
-        fn wrapper(handle: uv_handle_ptr):
-            is_continue = func()
-            if not is_continue:
-                _ = uv_idle_stop(handle)
+    fn is_active(self) -> Bool:
+        return Bool(uv_is_active(self.ptr))
 
-        _ = uv_idle_start(self.h.ptr, wrapper)
+    fn is_closing(self) -> Bool:
+        return Bool(uv_is_closing(self.ptr))
 
-    fn stop(self) raises:
-        r = uv_idle_stop(self.h.ptr)
-        if r != 0:
-            raise_uverr["stop failed"](r)
+    fn loop(self) -> Loop:
+        var loop = uv_handle_get_loop(self.ptr)
+        return Loop(loop, is_owned=False)
+
+    fn get_data[T: AnyType](self) -> UnsafePointer[T]:
+        return uv_handle_get_data[T](self.ptr)
+
+    fn set_data[T: AnyType](self, data: UnsafePointer[T]):
+        return uv_handle_set_data(self.ptr, data)
 
 
 fn uv_idle_init(loop: uv_loop_ptr, idle: uv_handle_ptr) -> c_int:
@@ -320,31 +400,230 @@ fn uv_idle_stop(idle: uv_handle_ptr) -> c_int:
     ]()(idle)
 
 
-# fn uv_loop_init(
-#     light_handle: UnsafePointer[UnsafePointer[Context]],
-# ) -> Result:
-#     return _get_dylib_function[
-#         "cublasLtCreate",
-#         fn (UnsafePointer[UnsafePointer[Context]]) -> Result,
-#     ]()(light_handle)
+struct IdleHandle(Movable):
+    var h: Handle[UV_IDLE]
+    var idle_func: OwnedPointer[fn () escaping -> Bool]
+
+    @staticmethod
+    fn new[func: fn () -> Bool](loop: Loop) -> Self:
+        fn wrapper() escaping -> Bool:
+            return func()
+
+        return Self(loop, wrapper)
+
+    @staticmethod
+    fn new[func: fn () capturing -> Bool](loop: Loop) -> Self:
+        fn wrapper() escaping -> Bool:
+            return func()
+
+        return Self(loop, wrapper)
+
+    fn __init__(out self, loop: Loop, func: fn () escaping -> Bool):
+        self.h = Handle[UV_IDLE].new()
+        self.idle_func = OwnedPointer(value=func)
+        # always succeeds
+        _ = uv_idle_init(loop._loop, self.h.ptr)
+
+    fn __moveinit__(out self, owned existing: Self):
+        self.h = existing.h
+        self.idle_func = existing.idle_func^
+
+    fn __enter__(owned self) -> Self:
+        return self^
+
+    fn __del__(owned self):
+        if not self.h.is_closing():
+            self.h.close()
+
+    fn start(self):
+        # capture unsafe pointer to self
+        # to be able to call the idle_func on self
+        # this allows capturing / escaping fn to be used
+        self_ptr = UnsafePointer(to=self)
+        self.h.set_data(self_ptr)
+
+        @always_inline
+        fn wrapper(handle: uv_handle_ptr):
+            var ptr = uv_handle_get_data[Self](handle)
+            is_continue = ptr[].idle_func[]()
+            if not is_continue:
+                _ = uv_idle_stop(handle)
+
+        _ = uv_idle_start(self.h.ptr, wrapper)
+
+    fn stop(self) raises:
+        r = uv_idle_stop(self.h.ptr)
+        if r != 0:
+            raise_uverr["stop failed"](r)
 
 
-# fn main() raises:
-#     alias py = Python()
-#     var d = py.dict()
-#     d["a"] = "b"
-#     print(d.__str__())
-#     var h = ffi.DLHandle("/usr/lib/libSystem.B.dylib")
-#     if not h.check_symbol("gethostname"):
-#         print("no gethostname")
-#         return
-#     var name = SIMD[DType.int8, 512]()
-#     var ptr = stack_allocation[512, ffi.c_char]()
-#     var r = h.call[
-#         "gethostname", ffi.c_int, UnsafePointer[ffi.c_char], ffi.c_size_t
-#     ](ptr, 512)
-#     print("result:", r)
-#     if r != 0:
-#         return
-#     hname = StringSlice[origin = ptr.origin](unsafe_from_utf8_ptr=ptr)
-#     print("hostname:", hname)
+fn uv_timer_init(loop: uv_loop_ptr, timer: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_timer_init",
+        fn (uv_loop_ptr, uv_handle_ptr) -> c_int,
+    ]()(loop, timer)
+
+
+alias uv_timer_cb = fn (uv_handle_ptr) -> None
+
+
+fn uv_timer_start(
+    timer: uv_handle_ptr,
+    cb: uv_timer_cb,
+    timeout: c_long_long,
+    repeat: c_long_long,
+) -> c_int:
+    return _get_dylib_function[
+        "uv_timer_start",
+        fn (uv_handle_ptr, uv_timer_cb, c_long_long, c_long_long) -> c_int,
+    ]()(timer, cb, timeout, repeat)
+
+
+fn uv_timer_stop(timer: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_timer_stop",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(timer)
+
+
+fn uv_timer_again(timer: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_timer_again",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(timer)
+
+
+fn uv_timer_get_repeat(timer: uv_handle_ptr) -> c_long_long:
+    return _get_dylib_function[
+        "uv_timer_get_repeat",
+        fn (uv_handle_ptr) -> c_long_long,
+    ]()(timer)
+
+
+fn uv_timer_get_due_in(timer: uv_handle_ptr) -> c_long_long:
+    return _get_dylib_function[
+        "uv_timer_get_due_in",
+        fn (uv_handle_ptr) -> c_long_long,
+    ]()(timer)
+
+
+struct TimerHandle(Movable):
+    var h: Handle[UV_TIMER]
+    var timer_func: OwnedPointer[fn () escaping -> None]
+
+    @staticmethod
+    fn new[func: fn () -> None](loop: Loop) -> Self:
+        fn wrapper() escaping -> None:
+            return func()
+
+        return Self(loop, wrapper)
+
+    @staticmethod
+    fn new[func: fn () capturing -> None](loop: Loop) -> Self:
+        fn wrapper() escaping -> None:
+            return func()
+
+        return Self(loop, wrapper)
+
+    fn __init__(out self, loop: Loop, func: fn () escaping -> None):
+        self.h = Handle[UV_TIMER].new()
+        self.timer_func = OwnedPointer(value=func)
+        # always succeeds
+        _ = uv_timer_init(loop._loop, self.h.ptr)
+
+    # fn __copyinit__(out self, existing: Self):
+    #     self.h = existing.h
+    #     self.timer_func = OwnedPointer(value=existing.timer_func[])
+    #     _ = self.timer_func.take()
+
+    fn __moveinit__(out self, owned existing: Self):
+        self.h = existing.h
+        self.timer_func = existing.timer_func^
+
+    fn __enter__(owned self) -> Self:
+        return self^
+
+    fn __del__(owned self):
+        if not self.h.is_closing():
+            self.h.close()
+
+    fn start(self, timeout: c_long_long, repeat: c_long_long):
+        self_ptr = UnsafePointer(to=self)
+        self.h.set_data(self_ptr)
+
+        @always_inline
+        fn wrapper(handle: uv_handle_ptr):
+            var ptr = uv_handle_get_data[Self](handle)
+            print("ptr:", ptr, "func:", ptr[].timer_func._inner)
+            ptr[].timer_func[]()
+
+        r = uv_timer_start(self.h.ptr, wrapper, timeout, repeat)
+        debug_assert(r == 0)
+
+    fn stop(self) raises:
+        r = uv_timer_stop(self.h.ptr)
+        if r != 0:
+            raise_uverr["stop failed"](r)
+
+    fn again(self) raises:
+        r = uv_timer_again(self.h.ptr)
+        if r != 0:
+            raise_uverr["again failed"](r)
+
+    fn get_repeat(self) -> c_long_long:
+        return uv_timer_get_repeat(self.h.ptr)
+
+    fn get_due_in(self) -> c_long_long:
+        return uv_timer_get_due_in(self.h.ptr)
+
+
+#
+# Prepare
+#
+
+
+fn uv_prepare_init(loop: uv_loop_ptr, prepare: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_prepare_init",
+        fn (uv_loop_ptr, uv_handle_ptr) -> c_int,
+    ]()(loop, prepare)
+
+
+alias uv_prepare_cb = fn (uv_handle_ptr) -> None
+
+
+fn uv_prepare_start(prepare: uv_handle_ptr, cb: uv_prepare_cb) -> c_int:
+    return _get_dylib_function[
+        "uv_prepare_start",
+        fn (uv_handle_ptr, uv_prepare_cb) -> c_int,
+    ]()(prepare, cb)
+
+
+fn uv_prepare_stop(prepare: uv_handle_ptr) -> c_int:
+    return _get_dylib_function[
+        "uv_prepare_stop",
+        fn (uv_handle_ptr) -> c_int,
+    ]()(prepare)
+
+
+struct PrepareHandle:
+    var h: Handle[UV_PREPARE]
+
+    fn __init__(out self, loop: Loop):
+        self.h = Handle[UV_PREPARE].new()
+        # always succeeds
+        _ = uv_prepare_init(loop._loop, self.h.ptr)
+
+    fn start[func: fn () -> Bool](self):
+        @always_inline
+        fn wrapper(handle: uv_handle_ptr):
+            is_continue = func()
+            if not is_continue:
+                _ = uv_prepare_stop(handle)
+
+        _ = uv_prepare_start(self.h.ptr, wrapper)
+
+    fn stop(self) raises:
+        r = uv_prepare_stop(self.h.ptr)
+        if r != 0:
+            raise_uverr["stop failed"](r)
